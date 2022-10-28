@@ -2,7 +2,6 @@ import com.github.difflib.UnifiedDiffUtils;
 import com.github.difflib.text.DiffRow;
 import com.github.difflib.text.DiffRowGenerator;
 import gumtree.spoon.diff.Diff;
-import javafx.util.Pair;
 import org.apache.commons.cli.*;
 import spoon.Launcher;
 import spoon.reflect.CtModel;
