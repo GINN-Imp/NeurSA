@@ -1,13 +1,8 @@
 import java.util.*;
 
 import fr.inria.controlflow.*;
-import org.json.simple.JSONArray;
-import spoon.reflect.code.CtCodeElement;
-import spoon.reflect.code.CtStatement;
 import spoon.reflect.declaration.CtElement;
 import org.json.simple.JSONObject;
-import spoon.reflect.declaration.CtModifiable;
-import spoon.reflect.declaration.CtTypedElement;
 
 
 public class intervalNode {
@@ -90,7 +85,7 @@ public class intervalNode {
     }
 
     public void constructIntervalCFG(){
-        returnJsonData(0);
+        //returnJsonData(0, null);
         for (ControlFlowNode n : CFGNodes) {
             returnToken(n);
         }
@@ -178,13 +173,17 @@ public class intervalNode {
 
     }
 
-    public JSONObject returnJsonData(int intervalID) {
+    static int count;
+
+    public JSONObject returnJsonData(int intervalID, HashSet<ControlFlowNode> CFGNodesWithoutCallee, boolean [] intervalNodeMask) {
         JSONObject graphJson = new JSONObject();
         List<int[]> graph = returnGraphRep();
         int[][] node_features = new int[nodeIds.size()][tokenIndex.Size];
         List<int[]> convRep = new ArrayList<>();
         int[] numOfFeatures = new int[nodeIds.entrySet().size()];
         int i = 0;
+        boolean[] node_mask = new boolean[nodeIds.size()];
+        boolean intervalMask = false;
 
         for (Map.Entry<ControlFlowNode, Integer> item : nodeIds.entrySet()) {
             ControlFlowNode node = item.getKey();
@@ -194,7 +193,17 @@ public class intervalNode {
             int [] tokenSeq = vis.getTokenSeq();
             numOfFeatures[i++] = tokenSeq.length;
             convRep.add(tokenSeq);
+
+            if (CFGNodesWithoutCallee == null || CFGNodesWithoutCallee.contains(node)) {
+                node_mask[id] = true;
+                intervalMask = true;
+                count++;
+            }
+            else {
+                node_mask[id] = false;
+            }
         }
+        intervalNodeMask[intervalID] = intervalMask;
 
         /*
         JSONArray a1 = new JSONArray();
@@ -206,11 +215,13 @@ public class intervalNode {
 
         graphJson.put("insideinterval", 1);
         graphJson.put("intervalID", intervalID);
-        graphJson.put("graph", commom.ArrayToList(graph));
-        graphJson.put("node_features", commom.ArrayToList(node_features));
-        graphJson.put("convRep", commom.ArrayToList(convRep));
-        graphJson.put("numOfFeatures", commom.ArrayToList(numOfFeatures));
-        graphJson.put("bugPos", commom.returnBuggyNode(nodeIds, buggyCFGNode));
+        graphJson.put("graph", common.ArrayToList(graph));
+        graphJson.put("node_features", common.ArrayToList(node_features));
+        graphJson.put("convRep", common.ArrayToList(convRep));
+        graphJson.put("numOfFeatures", common.ArrayToList(numOfFeatures));
+        graphJson.put("bugPos", common.returnBuggyNode(nodeIds, buggyCFGNode, node_mask));
+        // node_mask is used to mask node not in the top-level function (i.e., ignore callees)
+        graphJson.put("node_mask", common.ArrayToList(node_mask) );
 
         return graphJson;
     }

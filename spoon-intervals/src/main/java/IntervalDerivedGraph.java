@@ -1,4 +1,3 @@
-import com.github.gumtreediff.tree.ITree;
 import fr.inria.controlflow.BranchKind;
 import fr.inria.controlflow.ControlFlowEdge;
 import fr.inria.controlflow.ControlFlowGraph;
@@ -19,9 +18,12 @@ public class IntervalDerivedGraph extends DefaultDirectedGraph<intervalNode, int
     intervalNode buggyNode = null;
     CtMethod baseMethod = null;
     int buggyLine = 0;
+    boolean useDFG = false;
     ControlFlowNode buggyCFGNode = null;
     ControlFlowGraph CFG = null;
+    HashSet<ControlFlowNode> CFGNodesWithoutCallee = null;
     HashMap<ControlFlowNode, Integer> CFGNodeIds = null;
+    List<CtMethod> callees = null;
 
     public IntervalDerivedGraph(Class<? extends intervalEdge> edgeClass) {
         super(edgeClass);
@@ -29,6 +31,15 @@ public class IntervalDerivedGraph extends DefaultDirectedGraph<intervalNode, int
 
     public IntervalDerivedGraph() {
         super(intervalEdge.class);
+    }
+
+    public IntervalDerivedGraph(boolean useDFG) {
+        super(intervalEdge.class);
+        this.useDFG = useDFG;
+    }
+
+    public void addCFGNodesWithoutCallee(HashSet<ControlFlowNode> n) {
+        CFGNodesWithoutCallee = n;
     }
 
     List<ControlFlowNode> ReturnEntryNodes(ControlFlowGraph graph) {
@@ -41,6 +52,8 @@ public class IntervalDerivedGraph extends DefaultDirectedGraph<intervalNode, int
     }
 
     public void addCorBuggyMethod(CtMethod method) { corBuggyMethod = method;}
+
+    public void addCallees(List<CtMethod> methods) { callees = methods;}
 
     @Override
     public intervalEdge addEdge(intervalNode source, intervalNode target) {
@@ -67,6 +80,7 @@ public class IntervalDerivedGraph extends DefaultDirectedGraph<intervalNode, int
             for (ControlFlowNode h : n.getNode()) {
                 for (ControlFlowNode e : h.next()) {
                     intervalNode next = findNodeById(e.getId());
+                    //if (n == null || next == null) continue;
                     if (next.getNodeID() != n.getNodeID()) {
                         addEdge(n, next);
                     }
@@ -138,7 +152,7 @@ public class IntervalDerivedGraph extends DefaultDirectedGraph<intervalNode, int
                 buggyNode.updateBuggyCFGNode(buggyCFGNode);
             }
             else {
-                //TODO: ohhhhh myyyyyyy goooooood
+                //TODO: ohhhhh my goooooood
                 System.out.println("Still not found.");
             }
         }
@@ -156,6 +170,13 @@ public class IntervalDerivedGraph extends DefaultDirectedGraph<intervalNode, int
         }
     }
 
+    public intervalNode findIntervalNode(ControlFlowNode n) {
+        for (intervalNode in : vertexSet()) {
+            if (in.getNode().contains(n))
+                return in;
+        }
+        return  null;
+    }
 
     private List<int[]> returnGraphRep() {
         // [[0, 1, 1], [1, 1, 2], ...]
@@ -164,9 +185,17 @@ public class IntervalDerivedGraph extends DefaultDirectedGraph<intervalNode, int
 
         for (intervalEdge e : edgeSet()) {
             // the edge type should start at 1.
-            int[] data = {nodeIds.get(e.getSourceNode()), 1, nodeIds.get(e.getTargetNode())};
+            int[] data = {nodeIds.get(e.getSourceNode()), e.getEdgeType(), nodeIds.get(e.getTargetNode())};
             graph.add(data);
         }
+        if (useDFG) {
+            DataFlowGraph df = new DataFlowGraph(this);
+            for (Map.Entry<ControlFlowNode, ControlFlowNode> VRNode : df.retVRNodeMap().entrySet()) {
+                int[] data = {nodeIds.get(findIntervalNode(VRNode.getKey())), 2, nodeIds.get(findIntervalNode(VRNode.getValue()))};
+                graph.add(data);
+            }
+        }
+
         if (graph.isEmpty()) {
             int[] data = {0, 1, 0};
             graph.add(data);
@@ -187,50 +216,77 @@ public class IntervalDerivedGraph extends DefaultDirectedGraph<intervalNode, int
     public JSONObject returnJsonData() {
         JSONObject graphJson = new JSONObject();
         List<int[]> graph = returnGraphRep();
+        intervalNode.count = 0;
+        boolean[] node_mask = new boolean[nodeIds.size()];
         for (intervalNode n : vertexSet())
-            graphJson.put(nodeIds.get(n), n.returnJsonData(nodeIds.get(n)));
+            graphJson.put(nodeIds.get(n), n.returnJsonData(nodeIds.get(n), CFGNodesWithoutCallee, node_mask));
+        //System.out.println("interval count:"+intervalNode.count);
 
-        JSONArray a2 = commom.returnTarget(nodeIds, buggyNode);
-        JSONArray bugPos = commom.returnBuggyNode(nodeIds, buggyNode);
+        JSONArray a2 = common.returnTarget(nodeIds, buggyNode);
+        JSONArray bugPos = common.returnBuggyNode(nodeIds, buggyNode, node_mask);
 
         graphJson.put("insideinterval", 0);
         graphJson.put("targets", a2);
         graphJson.put("numOfNode", vertexSet().size());
-        graphJson.put("graph", commom.ArrayToList(graph));
+        graphJson.put("graph", common.ArrayToList(graph));
+        // incorrect bugpos, use intra-interval ones and
+        // you can also construct it from intra-interval bugpos.
         graphJson.put("bugPos", bugPos);
-        graphJson.put("fileHash", commom.returnFileInd(corBuggyMethod));
+        graphJson.put("fileHash", common.returnFileInd(corBuggyMethod));
+        graphJson.put("funName", baseMethod.getSimpleName());
 
         return graphJson;
+    }
+
+    private boolean [] filterNodeMaskByUninlinedFun() {
+        initCFGNodeID();
+        boolean[] node_mask = new boolean[CFGNodeIds.size()];
+        int count = 0;
+        for (Map.Entry<ControlFlowNode, Integer> item : CFGNodeIds.entrySet()) {
+            ControlFlowNode node = item.getKey();
+            Integer id = item.getValue();
+
+            if (CFGNodesWithoutCallee.contains(node)) {
+                node_mask[id] = true;
+                count++;
+            }
+            else {
+                node_mask[id] = false;
+            }
+        }
+        //System.out.println(count);
+        return node_mask;
     }
 
 
     public JSONObject returnASTJsonData() {
         JSONObject graphJson = new JSONObject();
 
-        ProgGraph astBasedProgGraph = new ProgGraph(baseMethod, buggyCFGNode, CFGNodeIds);
+        ProgGraph astBasedProgGraph = new ProgGraph(baseMethod, buggyCFGNode, CFGNodeIds, callees, CFGNodesWithoutCallee);
         List<int[]> graph = astBasedProgGraph.graph;
 
 
         int[][] node_features = astBasedProgGraph.returnFeatures();
         boolean[] node_mask = astBasedProgGraph.returnNodeMask();
 
-        JSONArray a2 = commom.returnTarget(CFGNodeIds, buggyCFGNode);
+        JSONArray a2 = common.returnTarget(CFGNodeIds, buggyCFGNode);
         JSONArray bugPos = astBasedProgGraph.returnBugPos();
 
         // The bug pos of AST is the same to CFG, since building CFG is based on AST.
         graphJson.put("targets", a2);
-        graphJson.put("node_features",commom.ArrayToList(node_features) );
-        graphJson.put("node_mask",commom.ArrayToList(node_mask) );
-        graphJson.put("graph", commom.ArrayToList(graph));
+        graphJson.put("node_features", common.ArrayToList(node_features) );
+        graphJson.put("node_mask", common.ArrayToList(node_mask) );
+        graphJson.put("graph", common.ArrayToList(graph));
         graphJson.put("bugPos", bugPos);
-        graphJson.put("fileHash", commom.returnFileInd(corBuggyMethod));
+        graphJson.put("fileHash", common.returnFileInd(corBuggyMethod));
+        graphJson.put("funName", baseMethod.getSimpleName());
         return graphJson;
     }
 
     private void initCFGNodeID() {
         if (CFGNodeIds != null)
             return;
-        CFGNodeIds = new HashMap<ControlFlowNode, Integer>();
+        CFGNodeIds = new HashMap<>();
         int i = 0;
         for (ControlFlowNode n : CFG.vertexSet()) {
             CFGNodeIds.put(n, i);
@@ -255,8 +311,8 @@ public class IntervalDerivedGraph extends DefaultDirectedGraph<intervalNode, int
         }
 
         int[][] node_features = new int[CFGNodeIds.size()][tokenIndex.Size];
-        boolean[] node_mask = new boolean[CFGNodeIds.size()];
-        Arrays.fill(node_mask, true);
+        // for mask inlined cfg nodes.
+        boolean [] node_mask = filterNodeMaskByUninlinedFun();
 
 
         for (Map.Entry<ControlFlowNode, Integer> item : CFGNodeIds.entrySet()) {
@@ -266,15 +322,16 @@ public class IntervalDerivedGraph extends DefaultDirectedGraph<intervalNode, int
             node_features[id] = vis.getVector();
         }
 
-        JSONArray a2 = commom.returnTarget(CFGNodeIds, buggyCFGNode);
-        JSONArray bugPos = commom.returnBuggyNode(CFGNodeIds, buggyCFGNode);
+        JSONArray a2 = common.returnTarget(CFGNodeIds, buggyCFGNode);
+        JSONArray bugPos = common.returnBuggyNode(CFGNodeIds, buggyCFGNode, node_mask);
 
         graphJson.put("targets", a2);
-        graphJson.put("node_mask",commom.ArrayToList(node_mask) );
-        graphJson.put("node_features",commom.ArrayToList(node_features) );
-        graphJson.put("graph", commom.ArrayToList(graph));
+        graphJson.put("node_mask", common.ArrayToList(node_mask) );
+        graphJson.put("node_features", common.ArrayToList(node_features) );
+        graphJson.put("graph", common.ArrayToList(graph));
         graphJson.put("bugPos", bugPos);
-        graphJson.put("fileHash", commom.returnFileInd(corBuggyMethod));
+        graphJson.put("fileHash", common.returnFileInd(corBuggyMethod));
+        graphJson.put("funName", baseMethod.getSimpleName());
 
         return graphJson;
     }

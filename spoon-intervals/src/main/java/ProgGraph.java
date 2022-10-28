@@ -1,34 +1,37 @@
 import com.github.gumtreediff.tree.ITree;
-import fr.inria.controlflow.ControlFlowGraph;
 import fr.inria.controlflow.ControlFlowNode;
 import gumtree.spoon.builder.SpoonGumTreeBuilder;
 import org.json.simple.JSONArray;
-import org.json.simple.JSONObject;
 import spoon.reflect.declaration.CtElement;
 import spoon.reflect.declaration.CtMethod;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class ProgGraph {
     CtMethod method = null;
     ITree iTree = null;
     ITree buggyNode = null;
     HashMap<ITree, Integer> nodeIds = new HashMap<ITree, Integer>();
-    HashMap<CtElement, ITree> eleTreeMap = new HashMap<CtElement, ITree>();
-    HashMap<ITree, ControlFlowNode> treeCFGMap = new HashMap<>();
+    HashMap<CtElement, List<ITree>> eleTreeMap = new HashMap<>();
+    HashSet<ITree> targetNodes = new HashSet<>();
     int treeNodeCount = 0;
     List<ITree> leafNode = new ArrayList<ITree>();
     List<int[]> graph = new ArrayList<int[]>();
     boolean[] node_mask = null;
+    HashSet<ControlFlowNode> CFGNodesWithoutInline = null;
+
     public ProgGraph(CtMethod method, ControlFlowNode buggyCFGNode,
-                     HashMap<ControlFlowNode, Integer> CFGNodeIds) {
+                     HashMap<ControlFlowNode, Integer> CFGNodeIds, List<CtMethod> callees,
+                     HashSet<ControlFlowNode> CFGNodesWithoutInline) {
         this.method = method;
+        this.CFGNodesWithoutInline = CFGNodesWithoutInline;
         SpoonGumTreeBuilder scanner = new SpoonGumTreeBuilder();
         iTree = scanner.getTree(method);
         retProg();
+        for (CtMethod callee : callees) {
+            iTree = scanner.getTree(callee);
+            retProg();
+        }
         initeleTreeMap();
         if (buggyCFGNode != null) {
             CtElement ele = buggyCFGNode.getStatement();
@@ -39,14 +42,17 @@ public class ProgGraph {
     private void initeleTreeMap() {
         for (Map.Entry<ITree, Integer> item : nodeIds.entrySet()) {
             ITree node = item.getKey();
-            CtElement ctele = (CtElement)node.getMetadata("spoon_object");
-            eleTreeMap.put(ctele, node);
+            CtElement ctele = common.returnElementOfITree(node);
+            if (!eleTreeMap.containsKey(ctele))
+                eleTreeMap.put(ctele, new ArrayList<ITree>());
+            eleTreeMap.get(ctele).add(node);
         }
     }
 
     private void locateBuggyNode(CtElement ele) {
         if (eleTreeMap.containsKey(ele)) {
-            buggyNode = eleTreeMap.get(ele);
+            List<ITree> tmp = eleTreeMap.get(ele);
+            buggyNode = tmp.get(0);
         }
         if (buggyNode == null) {
             System.out.println("ERROR: node in AST must be found");
@@ -61,11 +67,11 @@ public class ProgGraph {
             ITree node = item.getKey();
             Integer id = item.getValue();
 
-            CtElement ctele = commom.returnElementOfITree(node);
+            CtElement ctele = common.returnElementOfITree(node);
             tokenVisitor visitor = new tokenVisitor();
             visitor.scan(ctele);
             node_features[id] = visitor.getVector();
-            if (treeCFGMap.containsKey(item.getKey())) {
+            if (targetNodes.contains(node)) {
                 node_mask[id] = true;
             }
             else {
@@ -80,18 +86,7 @@ public class ProgGraph {
     }
 
     public JSONArray returnBugPos() {
-        int[] oldBuggyNodePos = new int[nodeIds.size()];
-        List<Integer> newBuggyNodePos = new ArrayList<>();
-        if (buggyNode != null) {
-            oldBuggyNodePos[nodeIds.get(buggyNode)] = 1;
-        }
-        for (int i = 0; i < nodeIds.size(); i++) {
-            if (node_mask[i]) {
-                newBuggyNodePos.add(oldBuggyNodePos[i]);
-            }
-        }
-
-        JSONArray bugPos = commom.ListToJsonArray(newBuggyNodePos);
+        JSONArray bugPos = common.returnBuggyNode(nodeIds, buggyNode, node_mask);
         return bugPos;
     }
 
@@ -118,15 +113,15 @@ public class ProgGraph {
     public void mapToCFG(HashMap<ControlFlowNode, Integer> CFGNodeIds) {
         //Requires: itree is built.
         for (Map.Entry<ControlFlowNode, Integer> item : CFGNodeIds.entrySet()) {
-            CtElement ele = item.getKey().getStatement();
+            ControlFlowNode n = item.getKey();
+            CtElement ele = n.getStatement();
             if (ele == null)
                 continue;
             if (eleTreeMap.containsKey(ele)) {
                 treeNodeCount++;
-                if (treeCFGMap.containsKey(eleTreeMap.get(ele))) {
-                    continue;
+                if (CFGNodesWithoutInline.contains(n)) {
+                    targetNodes.addAll(eleTreeMap.get(ele));
                 }
-                treeCFGMap.put(eleTreeMap.get(ele), item.getKey());
             }
             else {
                 System.out.println("ERROR in mapToCFG.");
